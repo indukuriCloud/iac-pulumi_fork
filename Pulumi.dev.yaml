@@ -1,4 +1,4 @@
-encryptionsalt: v1:WvpRlazYCDM=:v1:8PxH6UNSnsjG0hQt:46sg8LDAGV8M5Dd1b0+cLs65uEUOcg==
+encryptionsalt: v1:7SyI6i7aPKs=:v1:WleITjWFgUKYmQom:alPNEMqFWG/XzSIsrvImPHRgb51JeA==
 config:
   aws:profile: adminindukuri-dev
   aws:region: us-east-1
