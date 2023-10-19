@@ -1,4 +1,4 @@
-name: iac-pulumi
+name: security_group_pulumi
 runtime:
   name: python
   options:
