@@ -5,10 +5,31 @@ Pulumi allows you to automate the provisioning and management of cloud infrastru
 
 
 ### Requirements
+
 - Python 3.x
 - Pulumi 3.x.x
 - .env file 
 - AWS Account
+
+
+### Installation 
+https://www.pulumi.com/docs/install
+```bash
+$ brew install pulumi/tap/pulumi
+```
+https://www.pulumi.com/docs/languages-sdks/python
+
+### Create Instance
+```bash
+$ pulumi up --config aws:profile= Your_Admin_IAM_User
+```
+
+### Destroy Stack
+Once Everything is checked, delete the instance by:
+```bash
+$ pulumi destroy
+```
+
 
 ### Environment variables:
 AWS_REGION=YOUR_NEAREST_REGION
@@ -45,13 +66,26 @@ Instance_Type=t2.micro
 
 AMI=ami-id
 
-### Installation 
-https://www.pulumi.com/docs/install
-```bash
-$ brew install pulumi/tap/pulumi
-```
-https://www.pulumi.com/docs/install
-https://www.pulumi.com/docs/languages-sdks/python
+
+### RDS Instance Variables
+export ALLOCATED_STORAGE='10'
+
+export STORAGE_TYPE="gp2"
+
+export ENGINE="Postgres"
+
+export ENGINE_VERSION=""
+
+export INSTANCE_CLASS="db.t3.micro"
+
+export NAME=""
+
+export USERNAME=""
+
+export PASSWORD=""
+
+export DB_NAME=""
+
 
 ### License
 This project is licensed under the MIT License.
