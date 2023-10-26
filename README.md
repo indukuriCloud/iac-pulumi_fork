@@ -11,6 +11,26 @@ Pulumi allows you to automate the provisioning and management of cloud infrastru
 - .env file 
 - AWS Account
 
+
+### Installation 
+https://www.pulumi.com/docs/install
+```bash
+$ brew install pulumi/tap/pulumi
+```
+https://www.pulumi.com/docs/languages-sdks/python
+
+### Create Instance
+```bash
+$ pulumi up --config aws:profile= Your_Admin_IAM_User
+```
+
+### Destroy Stack
+Once Everything is checked, delete the instance by:
+```bash
+$ pulumi destroy
+```
+
+
 ### Environment variables:
 AWS_REGION=YOUR_NEAREST_REGION
 
@@ -65,25 +85,6 @@ export USERNAME=""
 export PASSWORD=""
 
 export DB_NAME=""
-
-
-### Installation 
-https://www.pulumi.com/docs/install
-```bash
-$ brew install pulumi/tap/pulumi
-```
-https://www.pulumi.com/docs/languages-sdks/python
-
-### Create Instance
-```bash
-$ pulumi up --config aws:profile= Your_Admin_IAM_User
-```
-
-### Destroy Stack
-Once Everything is checked, delete the instance by:
-```bash
-$ pulumi destroy
-```
 
 
 ### License
