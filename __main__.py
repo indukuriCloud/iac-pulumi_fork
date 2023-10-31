@@ -1,4 +1,5 @@
 import pulumi
+from pulumi import Output, ResourceOptions
 from pulumi_aws import ec2,rds
 from decouple import config
 import os
@@ -148,6 +149,14 @@ app_security_group = ec2.SecurityGroup(
             cidr_blocks=["0.0.0.0/0"],
         ),
     ],
+    egress=[
+        ec2.SecurityGroupEgressArgs(
+            from_port=0,
+            to_port=0,  # Allow all outbound traffic
+            protocol="-1",   # All protocols
+            cidr_blocks=["0.0.0.0/0"],  # Allow all outbound traffic
+        ),
+    ],
     tags={
         "Name": "appSecurityGroup",
     },
@@ -201,7 +210,7 @@ rds_instance = rds.Instance(
     engine=os.getenv("ENGINE"),  # Use PostgreSQL
     engine_version=os.getenv("ENGINE_VERSION"),  # Specify the PostgreSQL version
     instance_class=os.getenv("INSTANCE_CLASS"),  # Choose an appropriate instance class
-    username=os.getenv("USERNAME"),  # Master username
+    username=os.getenv("DB_USERNAME"),  # Master username
     password=os.getenv("PASSWORD"),  # Specify a strong master password
     skip_final_snapshot=True,  # Configure as needed
     vpc_security_group_ids=[db_security_group.id],  # Attach the database security group
@@ -216,13 +225,20 @@ rds_instance = rds.Instance(
     
 )
 
-user_data = f"""
-#!/bin/bash
-sed -i 's/POSTGRES_USER ?= webapp/POSTGRES_USER ?= {os.getenv("USERNAME")}/g' /home/ec2-user/webapp/Makefile
-sed -i 's/POSTGRES_PASSWORD ?= webapp/POSTGRES_PASSWORD ?= {os.getenv("PASSWORD")}/g' /home/ec2-user/webapp/Makefile
-sed -i 's/POSTGRES_HOST ?= 127.0.0.1/POSTGRES_HOST ?= {rds_instance.address}/g' /home/ec2-user/webapp/Makefile
-sed -i 's/POSTGRES_DB ?= webapp/POSTGRES_DB ?= {os.getenv("DB_NAME")}/g' /home/ec2-user/webapp/Makefile
-"""
+user_data = Output.all(
+    rds_instance.address,
+    Output.from_input(os.getenv("DB_USERNAME")),
+    Output.from_input(os.getenv("PASSWORD")),
+    Output.from_input(os.getenv("DB_NAME"))
+).apply(lambda values: f"""#!/bin/bash
+sed -i 's/POSTGRES_USER ?= cloud/POSTGRES_USER ?= {values[1]}/g' /home/admin/webapp/Makefile
+sed -i 's/POSTGRES_PASSWORD ?= cloud/POSTGRES_PASSWORD ?= {values[2]}/g' /home/admin/webapp/Makefile
+sed -i 's/POSTGRES_HOST ?= 127.0.0.1/POSTGRES_HOST ?= {values[0]}/g' /home/admin/webapp/Makefile
+sed -i 's/POSTGRES_DB ?= cloud/POSTGRES_DB ?= {values[3]}/g' /home/admin/webapp/Makefile
+sudo systemctl restart webapp
+sudo systemctl disable postgresql
+sudo systemctl stop postgresql
+""")
 
 ec2_instance = ec2.Instance(
     "ec2Instance",
@@ -234,10 +250,12 @@ ec2_instance = ec2.Instance(
         volume_size=25,
         volume_type="gp2",
     ),
+    key_name="aws-dev",
     tags={
         "Name": "EC2Instance",
     },
     user_data_replace_on_change=True,
-    user_data=user_data
+    user_data=user_data,
+    opts=ResourceOptions(depends_on=[rds_instance])
 
 )
