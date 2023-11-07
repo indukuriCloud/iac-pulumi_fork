@@ -1,6 +1,6 @@
 import pulumi
 from pulumi import Output, ResourceOptions
-from pulumi_aws import ec2,rds
+from pulumi_aws import ec2,rds, route53, iam
 from decouple import config
 import os
 
@@ -22,6 +22,7 @@ public_route = config("MY_PUBLIC_ROUTE")
 public_route_cidr_des = config("MY_PUBLIC_ROUTE_CIDR_DES")
 instance_type = config("Instance_Type")
 ami = config("AMI")
+a_record_name = config("A_RECORD_NAME")
 
 # Create a VPC
 vpc = ec2.Vpc(
@@ -231,14 +232,43 @@ user_data = Output.all(
     Output.from_input(os.getenv("PASSWORD")),
     Output.from_input(os.getenv("DB_NAME"))
 ).apply(lambda values: f"""#!/bin/bash
-sed -i 's/POSTGRES_USER ?= cloud/POSTGRES_USER ?= {values[1]}/g' /home/admin/webapp/Makefile
-sed -i 's/POSTGRES_PASSWORD ?= cloud/POSTGRES_PASSWORD ?= {values[2]}/g' /home/admin/webapp/Makefile
-sed -i 's/POSTGRES_HOST ?= 127.0.0.1/POSTGRES_HOST ?= {values[0]}/g' /home/admin/webapp/Makefile
-sed -i 's/POSTGRES_DB ?= cloud/POSTGRES_DB ?= {values[3]}/g' /home/admin/webapp/Makefile
+sed -i 's/POSTGRES_USER ?= cloud/POSTGRES_USER ?= {values[1]}/g' /home/manohar/webapp/Makefile
+sed -i 's/POSTGRES_PASSWORD ?= cloud/POSTGRES_PASSWORD ?= {values[2]}/g' /home/manohar/webapp/Makefile
+sed -i 's/POSTGRES_HOST ?= 127.0.0.1/POSTGRES_HOST ?= {values[0]}/g' /home/manohar/webapp/Makefile
+sed -i 's/POSTGRES_DB ?= cloud/POSTGRES_DB ?= {values[3]}/g' /home/manohar/webapp/Makefile
 sudo systemctl restart webapp
 sudo systemctl disable postgresql
 sudo systemctl stop postgresql
+
+sudo -i -u manohar bash << EOF
+
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file://home/manohar/webapp/packer/cloudwatch-config.json -s
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
+
+EOF
+
 """)
+
+cloudwatch_role = iam.Role(
+    "cloudwatch-role",
+    assume_role_policy="""{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": "sts:AssumeRole",
+                "Principal": {
+                    "Service": "ec2.amazonaws.com"
+                },
+                "Effect": "Allow"
+            }
+        ]
+    }""",
+)
+
+instance_profile = iam.InstanceProfile(
+    "cloudwatch-instance-profile",
+    role=cloudwatch_role.name,
+)
 
 ec2_instance = ec2.Instance(
     "ec2Instance",
@@ -256,6 +286,29 @@ ec2_instance = ec2.Instance(
     },
     user_data_replace_on_change=True,
     user_data=user_data,
-    opts=ResourceOptions(depends_on=[rds_instance])
+    opts=ResourceOptions(depends_on=[rds_instance]),
+    iam_instance_profile=instance_profile.name,
 
 )
+
+selected = route53.get_zone(name=a_record_name)
+
+a_record = route53.Record(
+    "a_record",
+    zone_id=selected.zone_id,  
+    name=a_record_name,  
+    type="A",
+    ttl=60,
+    records=[ec2_instance.public_ip],
+    opts=ResourceOptions(depends_on=[ec2_instance])  
+)
+
+# Attach the policy to the CloudWatch role
+iam.RolePolicyAttachment(
+    "cloudwatch-policy-attachment",
+    policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+    role=cloudwatch_role.name,
+)
+
+pulumi.export("ip", ec2_instance.public_ip)
+pulumi.export("role", cloudwatch_role.name)

@@ -2,3 +2,4 @@
 venv/
 .env
 *.*.yaml
+.DS_Store
