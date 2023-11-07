@@ -32,6 +32,7 @@ $ pulumi destroy
 
 
 ### Environment variables:
+```
 AWS_REGION=YOUR_NEAREST_REGION
 
 AWS_AVAILABILITY_ZONES=AVAILABLE_REGION
@@ -65,9 +66,10 @@ MY_PUBLIC_ROUTE_CIDR_DES=0.0.0.0/0
 Instance_Type=t2.micro
 
 AMI=ami-id
-
+```
 
 ### RDS Instance Variables
+```
 export ALLOCATED_STORAGE='10'
 
 export STORAGE_TYPE="gp2"
@@ -85,7 +87,7 @@ export USERNAME=""
 export PASSWORD=""
 
 export DB_NAME=""
-
+```
 
 ### License
 This project is licensed under the MIT License.
