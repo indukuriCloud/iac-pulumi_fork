@@ -1,8 +1,10 @@
 import pulumi
 from pulumi import Output, ResourceOptions
-from pulumi_aws import ec2,rds, route53, iam
+from pulumi_aws import ec2,rds, route53, iam, autoscaling, cloudwatch, lb
 from decouple import config
 import os
+import base64
+
 
 # Load environment variables from the .env file
 region = config("AWS_REGION")
@@ -120,34 +122,22 @@ public_route = ec2.Route(
     gateway_id=internet_gateway.id,
 )
 
-app_security_group = ec2.SecurityGroup(
-    "appSecurityGroup",
+# Load Balancer Security Group
+load_balancer_security_group = ec2.SecurityGroup(
+    "loadBalancerSecurityGroup",
     vpc_id=vpc.id,
     ingress=[
-        ec2.SecurityGroupIngressArgs(
-            from_port=22,
-            to_port=22,
-            protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"],  # Allow SSH from anywhere
-        ),
         ec2.SecurityGroupIngressArgs(
             from_port=80,
             to_port=80,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"],  # Allow HTTP from anywhere
+            cidr_blocks=["0.0.0.0/0"],  # Allow TCP on port 80 from anywhere
         ),
         ec2.SecurityGroupIngressArgs(
             from_port=443,
             to_port=443,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"],  # Allow HTTPS from anywhere
-        ),
-        # Add ingress rule for your application port here
-        ec2.SecurityGroupIngressArgs(
-            from_port=8000,
-            to_port=8000,
-            protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"],
+            cidr_blocks=["0.0.0.0/0"],  # Allow TCP on port 443 from anywhere
         ),
     ],
     egress=[
@@ -159,9 +149,41 @@ app_security_group = ec2.SecurityGroup(
         ),
     ],
     tags={
+        "Name": "loadBalancerSecurityGroup",
+    },
+)
+
+# Update App Security Group
+app_security_group_ingress = [
+    ec2.SecurityGroupIngressArgs(
+        from_port=22,
+        to_port=22,
+        protocol="tcp",
+        security_groups=[load_balancer_security_group.id],  # Allow SSH from load balancer
+    ),
+    ec2.SecurityGroupIngressArgs(
+        from_port=8000, 
+        to_port=8000,  
+        protocol="tcp",
+        security_groups=[load_balancer_security_group.id],  # Allow application traffic from load balancer
+    ),
+]
+
+app_security_group = ec2.SecurityGroup(
+    "appSecurityGroup",
+    vpc_id=vpc.id,
+    ingress=app_security_group_ingress,
+    egress=[
+        ec2.SecurityGroupEgressArgs(
+            from_port=0,
+            to_port=0,  # Allow all outbound traffic
+            protocol="-1",   # All protocols
+            cidr_blocks=["0.0.0.0/0"],  # Allow all outbound traffic
+        ),
+    ],
+    tags={
         "Name": "appSecurityGroup",
     },
-    
 )
 
 # Create a security group for RDS instances (Database Security Group)
@@ -226,6 +248,7 @@ rds_instance = rds.Instance(
     
 )
 
+# User Data
 user_data = Output.all(
     rds_instance.address,
     Output.from_input(os.getenv("DB_USERNAME")),
@@ -249,6 +272,9 @@ EOF
 
 """)
 
+user_data_base64 = Output.all(user_data).apply(lambda us: base64.b64encode(us[0].encode("utf-8")).decode("utf-8"))
+
+# Cloud watch I AM role
 cloudwatch_role = iam.Role(
     "cloudwatch-role",
     assume_role_policy="""{
@@ -270,39 +296,6 @@ instance_profile = iam.InstanceProfile(
     role=cloudwatch_role.name,
 )
 
-ec2_instance = ec2.Instance(
-    "ec2Instance",
-    instance_type=instance_type,
-    ami=ami,  # Replace with your custom AMI ID
-    vpc_security_group_ids=[app_security_group.id],
-    subnet_id=public_subnets[0].id,  # Choose one of your public subnets
-    root_block_device=ec2.InstanceRootBlockDeviceArgs(
-        volume_size=25,
-        volume_type="gp2",
-    ),
-    key_name="aws-dev",
-    tags={
-        "Name": "EC2Instance",
-    },
-    user_data_replace_on_change=True,
-    user_data=user_data,
-    opts=ResourceOptions(depends_on=[rds_instance]),
-    iam_instance_profile=instance_profile.name,
-
-)
-
-selected = route53.get_zone(name=a_record_name)
-
-a_record = route53.Record(
-    "a_record",
-    zone_id=selected.zone_id,  
-    name=a_record_name,  
-    type="A",
-    ttl=60,
-    records=[ec2_instance.public_ip],
-    opts=ResourceOptions(depends_on=[ec2_instance])  
-)
-
 # Attach the policy to the CloudWatch role
 iam.RolePolicyAttachment(
     "cloudwatch-policy-attachment",
@@ -310,5 +303,163 @@ iam.RolePolicyAttachment(
     role=cloudwatch_role.name,
 )
 
-pulumi.export("ip", ec2_instance.public_ip)
+
+# Create an Application Load Balancer
+load_balancer = lb.LoadBalancer(
+    "myLoadBalancer",
+    internal=False,
+    load_balancer_type="application",
+    security_groups=[load_balancer_security_group.id],
+    subnets=[subnet.id for subnet in public_subnets],  # Use public subnets
+)
+
+# Create a Target Group for the Load Balancer
+target_group = lb.TargetGroup(
+    "appTargetGroup",
+    port=8000,  # Make sure to define application_port
+    protocol="HTTP",
+    target_type="instance",
+    vpc_id=vpc.id,
+    health_check={
+        "enabled": True,
+        "matcher": "200",
+        "path": "/healthz",  # Modify as per your application's health check endpoint
+        "protocol": "HTTP",
+        "interval": 30,
+        "healthy_threshold": 2,  # Added parameter
+        "unhealthy_threshold": 2,  # Added parameter
+        "timeout": 5,  # Added parameter
+        "port": "8000"
+    },
+    tags={
+        "Name": "app-target-group",  # Modify the tag as needed
+    },
+)
+
+# Create Load Balancer Listener
+app_listener = lb.Listener(
+    "appListener",
+    load_balancer_arn=load_balancer.arn,
+    port=80,
+    protocol="HTTP",
+    default_actions=[
+        {
+            "type": "forward",
+            "target_group_arn": target_group.arn,
+        },
+    ],
+)
+
+
+#  Auto Scaling Application Launch Template
+launch_template = ec2.LaunchTemplate("webAppLaunchTemplate",
+    image_id=ami,  # Your custom AMI ID
+    instance_type="t2.micro",
+    key_name="aws-dev",  # Replace with your key name "YOUR_AWS_KEYNAME"
+    network_interfaces=[{
+        "associate_public_ip_address": True,
+        "security_groups": [app_security_group.id],  # Assuming 'app_security_group' is defined in your Python code.
+    }],
+    user_data=user_data_base64,  # Use the same user data as your current EC2 instance
+    iam_instance_profile={
+        "arn": instance_profile.arn,  # Assuming 'ec2_instance_profile' is defined in your Python code.
+    },
+)
+
+# Auto Scaling Group
+auto_scaling_group = autoscaling.Group(
+    "webAppAutoScalingGroup",
+    launch_template=autoscaling.GroupLaunchTemplateArgs(
+        id=launch_template.id,
+        version="$Latest",
+    ),
+    min_size=1,
+    max_size=3,
+    desired_capacity=1,
+    default_cooldown=60,
+    vpc_zone_identifiers=[subnet.id for subnet in public_subnets],
+    tags=[
+        autoscaling.GroupTagArgs(
+            key="webapp",
+            value="webAppAutoScalingGroup",
+            propagate_at_launch=True,
+        ),
+    ],
+
+)
+
+# Create Scaling Policies
+scale_up_policy = autoscaling.Policy(
+    "scaleUpPolicy",
+    policy_type = "SimpleScaling",
+    scaling_adjustment=1,
+    adjustment_type="ChangeInCapacity",
+    cooldown=60,
+    autoscaling_group_name=auto_scaling_group.name,
+)
+
+scale_down_policy = autoscaling.Policy(
+    "scaleDownPolicy",
+    policy_type = "SimpleScaling",
+    scaling_adjustment=-1,
+    adjustment_type="ChangeInCapacity",
+    cooldown=60,
+    autoscaling_group_name=auto_scaling_group.name,
+)
+
+# Create CloudWatch Alarms
+cpu_utilization_high_alarm = cloudwatch.MetricAlarm(
+    "cpuUtilizationHighAlarm",
+    comparison_operator="GreaterThanThreshold",
+    evaluation_periods=1,
+    metric_name="CPUUtilization",
+    namespace="AWS/EC2",
+    period=60,
+    threshold=5,
+    statistic="Average",
+    alarm_actions=[scale_up_policy.arn],
+    dimensions={"AutoScalingGroupName": auto_scaling_group.name},
+)
+
+cpu_utilization_low_alarm = cloudwatch.MetricAlarm(
+    "cpuUtilizationLowAlarm",
+    comparison_operator="LessThanThreshold",
+    evaluation_periods=1,
+    metric_name="CPUUtilization",
+    namespace="AWS/EC2",
+    period=60,
+    threshold=3,
+    statistic="Average",
+    alarm_actions=[scale_down_policy.arn],
+    dimensions={"AutoScalingGroupName": auto_scaling_group.name},
+)
+
+# Update Auto Scaling Group to use the ALB
+auto_scaling_group.attachments = [
+    autoscaling.Attachment(
+        autoscaling_group_name=auto_scaling_group.name,
+        lb_target_group_arn=target_group.arn,  # Use the Target Group ARN of your ALB
+        resource_name="AutoScale_LB",
+    ),
+]
+
+# After Load Balancer is created, define Route 53 A record
+a_record = pulumi.Output.concat(load_balancer.dns_name).apply(lambda dns_name: 
+    route53.Record(
+        "a_record",
+        name=a_record_name,
+        zone_id="Z08845853GJKTZAIZRRZ1",
+        type="A",
+        aliases=[{
+            "name": dns_name,
+            "zoneId": load_balancer.zone_id,  # Load Balancer Zone ID
+            "evaluateTargetHealth": True,
+        }],
+    )
+)
+
+# Export relevant information
 pulumi.export("role", cloudwatch_role.name)
+pulumi.export("autoScalingGroup", auto_scaling_group.name)
+pulumi.export("loadBalancerSecurityGroup", load_balancer_security_group.name)
+pulumi.export("loadBalancer", load_balancer.dns_name)
