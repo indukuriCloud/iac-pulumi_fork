@@ -1,10 +1,18 @@
-import pulumi
-from pulumi import Output, ResourceOptions
-from pulumi_aws import ec2,rds, route53, iam, autoscaling, cloudwatch, lb
-from decouple import config
 import os
 import base64
+import boto3
+import pulumi
+import json
+import subprocess
+from decouple import config
+from pulumi_gcp import storage, serviceaccount, projects
+from dotenv import load_dotenv
+from pulumi import Output, ResourceOptions
+from pulumi_aws import ec2,rds, route53, iam, autoscaling, cloudwatch, lb, sns, dynamodb, lambda_
+from pulumi_random import RandomPassword
 
+# Load environment variables from the .env file
+load_dotenv()
 
 # Load environment variables from the .env file
 region = config("AWS_REGION")
@@ -23,8 +31,22 @@ internet_gateway = config("MY_INTERNET_GATEWAY")
 public_route = config("MY_PUBLIC_ROUTE")
 public_route_cidr_des = config("MY_PUBLIC_ROUTE_CIDR_DES")
 instance_type = config("Instance_Type")
+key = os.getenv("SSH_KEY")
 ami = config("AMI")
 a_record_name = config("A_RECORD_NAME")
+zone_id = config("HOSTED_ZONE_ID")
+
+#GCS
+gcp_bucket_name = os.getenv("GCP_BUCKET_NAME")
+gcp_bucker_location = os.getenv("GCP_BUCKER_LOCATION")
+project_id = os.getenv("PROJECT_ID")
+
+#lambda
+mailgun_api_key = os.getenv("MAILGUN_API_KEY")
+mailgun_domain = os.getenv("MAILGUN_DOMAIN")
+mailgun_sender = os.getenv("MAILGUN_SENDER")
+dynamodb_table = os.getenv("DYNAMODB_TABLE")
+lambda_packages=os.getenv("LAMBDA_PACKAGES")
 
 # Create a VPC
 vpc = ec2.Vpc(
@@ -159,7 +181,8 @@ app_security_group_ingress = [
         from_port=22,
         to_port=22,
         protocol="tcp",
-        security_groups=[load_balancer_security_group.id],  # Allow SSH from load balancer
+        cidr_blocks=["0.0.0.0/0"],  # Allow SSH from any IP
+        # security_groups=[load_balancer_security_group.id],
     ),
     ec2.SecurityGroupIngressArgs(
         from_port=8000, 
@@ -210,9 +233,9 @@ rds_parameter_group = rds.ParameterGroup(
     parameters=[
         rds.ParameterGroupParameterArgs(
             name="autovacuum",
-            value="on",
+            value="1",
+            apply_method="immediate"
         ),
-        # Add more PostgreSQL parameter settings as needed
     ],
 )
 
@@ -248,17 +271,25 @@ rds_instance = rds.Instance(
     
 )
 
+# Define the SNS topic
+sns_topic = sns.Topic("my-sns-topic")
+
 # User Data
 user_data = Output.all(
     rds_instance.address,
     Output.from_input(os.getenv("DB_USERNAME")),
     Output.from_input(os.getenv("PASSWORD")),
-    Output.from_input(os.getenv("DB_NAME"))
+    Output.from_input(os.getenv("DB_NAME")),
+    region,
+    sns_topic.arn
 ).apply(lambda values: f"""#!/bin/bash
 sed -i 's/POSTGRES_USER ?= cloud/POSTGRES_USER ?= {values[1]}/g' /home/manohar/webapp/Makefile
 sed -i 's/POSTGRES_PASSWORD ?= cloud/POSTGRES_PASSWORD ?= {values[2]}/g' /home/manohar/webapp/Makefile
 sed -i 's/POSTGRES_HOST ?= 127.0.0.1/POSTGRES_HOST ?= {values[0]}/g' /home/manohar/webapp/Makefile
 sed -i 's/POSTGRES_DB ?= cloud/POSTGRES_DB ?= {values[3]}/g' /home/manohar/webapp/Makefile
+sed -i 's/AWS_REGION ?= us-east-1/AWS_REGION ?= {values[4]}/g' /home/manohar/webapp/Makefile
+sed -i 's/SNS_TOPIC_ARN ?= arn/SNS_TOPIC_ARN ?= {values[5]}/g' /home/manohar/webapp/Makefile
+
 sudo systemctl restart webapp
 sudo systemctl disable postgresql
 sudo systemctl stop postgresql
@@ -275,7 +306,7 @@ EOF
 user_data_base64 = Output.all(user_data).apply(lambda us: base64.b64encode(us[0].encode("utf-8")).decode("utf-8"))
 
 # Cloud watch I AM role
-cloudwatch_role = iam.Role(
+attach_role = iam.Role(
     "cloudwatch-role",
     assume_role_policy="""{
         "Version": "2012-10-17",
@@ -290,19 +321,24 @@ cloudwatch_role = iam.Role(
         ]
     }""",
 )
-
 instance_profile = iam.InstanceProfile(
-    "cloudwatch-instance-profile",
-    role=cloudwatch_role.name,
+    "instance-profile",
+    role=attach_role.name,
 )
 
 # Attach the policy to the CloudWatch role
 iam.RolePolicyAttachment(
     "cloudwatch-policy-attachment",
     policy_arn="arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
-    role=cloudwatch_role.name,
+    role=attach_role.name,
 )
 
+# Attach a policy that allows SNS actions
+iam.RolePolicyAttachment(
+    "snsPolicyAttachment",
+    policy_arn="arn:aws:iam::aws:policy/AmazonSNSFullAccess", 
+    role=attach_role.name
+)
 
 # Create an Application Load Balancer
 load_balancer = lb.LoadBalancer(
@@ -350,25 +386,26 @@ app_listener = lb.Listener(
     ],
 )
 
-
 #  Auto Scaling Application Launch Template
 launch_template = ec2.LaunchTemplate("webAppLaunchTemplate",
+    name="webAppLaunchTemplate",
     image_id=ami,  # Your custom AMI ID
     instance_type="t2.micro",
-    key_name="aws-dev",  # Replace with your key name "YOUR_AWS_KEYNAME"
+    key_name=key, 
     network_interfaces=[{
         "associate_public_ip_address": True,
-        "security_groups": [app_security_group.id],  # Assuming 'app_security_group' is defined in your Python code.
+        "security_groups": [app_security_group.id],
     }],
-    user_data=user_data_base64,  # Use the same user data as your current EC2 instance
+    user_data=user_data_base64, 
     iam_instance_profile={
-        "arn": instance_profile.arn,  # Assuming 'ec2_instance_profile' is defined in your Python code.
+        "arn": instance_profile.arn, 
     },
 )
 
 # Auto Scaling Group
 auto_scaling_group = autoscaling.Group(
     "webAppAutoScalingGroup",
+    name="webAppAutoScalingGroup",
     launch_template=autoscaling.GroupLaunchTemplateArgs(
         id=launch_template.id,
         version="$Latest",
@@ -385,7 +422,6 @@ auto_scaling_group = autoscaling.Group(
             propagate_at_launch=True,
         ),
     ],
-
 )
 
 # Create Scaling Policies
@@ -448,7 +484,7 @@ a_record = pulumi.Output.concat(load_balancer.dns_name).apply(lambda dns_name:
     route53.Record(
         "a_record",
         name=a_record_name,
-        zone_id="Z08845853GJKTZAIZRRZ1",
+        zone_id=zone_id,
         type="A",
         aliases=[{
             "name": dns_name,
@@ -458,8 +494,109 @@ a_record = pulumi.Output.concat(load_balancer.dns_name).apply(lambda dns_name:
     )
 )
 
+# Generate a random password for the Lambda function
+password = RandomPassword("lambdaPassword", length=16, special=True)
+
+lambda_role = iam.Role(
+    "lambda_role",
+    assume_role_policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": "sts:AssumeRole",
+                "Principal": {
+                    "Service": "lambda.amazonaws.com",
+                },
+                "Effect": "Allow",
+                "Sid": "",
+            },
+        ],
+    }),
+)
+
+dynamodb_policy_attachment = iam.PolicyAttachment(
+    "dynamodb_policy_attachment",
+    policy_arn="arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess",
+    roles=[lambda_role.name],
+)
+
+# Create a DynamoDB table to track emails
+email_tracking_table = dynamodb.Table(
+    "email_track",
+    attributes=[{"name": "id", "type": "N"}],
+    billing_mode="PAY_PER_REQUEST",
+    hash_key="id",
+)
+
+gcs_bucket = storage.Bucket(gcp_bucket_name, location=gcp_bucker_location)
+
+# Create a Google Service Account
+service_account = serviceaccount.Account("serviceAccount",
+    account_id="lambda",
+    display_name="Lambda Service Account")
+
+# Grant write permissions to the service account on the GCS bucket
+role = projects.IAMBinding("role",
+    role="roles/storage.objectUser",
+    project=project_id,
+    members=[pulumi.Output.concat("serviceAccount:", service_account.email)])
+
+role_viewer = projects.IAMBinding("role-viewer",
+    role="roles/storage.insightsCollectorService",
+    project=project_id,
+    members=[pulumi.Output.concat("serviceAccount:", service_account.email)])
+
+# Create Access Keys for the Google Service Account
+access_keys = serviceaccount.Key("my-access-keys",
+    service_account_id=service_account.name,
+
+)
+
+# lambda_environment_uppercase = {k.upper(): v for k, v in lambda_environment.items()}
+
+# Create an AWS Lambda function
+lambda_function = lambda_.Function(
+    "middleware",
+    runtime="python3.11",
+    handler="lambda_function.lambda_handler",
+    code=pulumi.AssetArchive({
+        ".": pulumi.FileArchive(lambda_packages),
+    }),
+    environment=lambda_.FunctionEnvironmentArgs(
+        variables={
+            "GCS_BUCKET_NAME": gcs_bucket.name,
+            "MAILGUN_API_KEY": mailgun_api_key,
+            "MAILGUN_DOMAIN": mailgun_domain,
+            "MAILGUN_SENDER": mailgun_sender,
+            "DYNAMODB_TABLE": dynamodb_table,
+            "AWS_REG": region,
+            "GCP_CREDENTIALS": access_keys.private_key
+        },
+
+    ),
+    role=lambda_role.arn, 
+    timeout=300,
+)
+
+lambda_.Permission(
+    "lambda-dynamodb-permission",
+    action="lambda:InvokeFunction",
+    function=lambda_function.arn,
+    principal="sns.amazonaws.com",
+)
+
+# Subscribe Lambda function to the SNS topic
+sns_topic_subscription = sns.TopicSubscription(
+    "lambdaSubscription",
+    protocol="lambda",
+    endpoint=lambda_function.arn,
+    topic=sns_topic.arn
+)
+
 # Export relevant information
-pulumi.export("role", cloudwatch_role.name)
+pulumi.export("role", attach_role.name)
 pulumi.export("autoScalingGroup", auto_scaling_group.name)
 pulumi.export("loadBalancerSecurityGroup", load_balancer_security_group.name)
 pulumi.export("loadBalancer", load_balancer.dns_name)
+pulumi.export("sns_topic_arn", sns_topic.arn)
+pulumi.export("lambdaFunctionArn", lambda_function.arn)

@@ -30,6 +30,10 @@ Once Everything is checked, delete the instance by:
 $ pulumi destroy
 ```
 
+# Lambda Packages
+```
+https://github.com/indukuriCloud/test/raw/main/my_deployment_package.zip
+```
 
 ### Environment variables:
 ```
@@ -89,5 +93,26 @@ export PASSWORD=""
 export DB_NAME=""
 ```
 
+### GCP 
+```
+GCP_BUCKET_NAME=
+
+GCP_BUCKER_LOCATION=
+
+PROJECT_ID=
+```
+### AWS Lambda
+```
+MAILGUN_API_KEY=
+
+MAILGUN_DOMAIN=
+
+MAILGUN_SENDER=
+
+DYNAMODB_TABLE=
+
+LAMBDA_PACKAGES=
+
+```
 ### License
 This project is licensed under the MIT License.
