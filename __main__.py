@@ -8,7 +8,7 @@ from decouple import config
 from pulumi_gcp import storage, serviceaccount, projects
 from dotenv import load_dotenv
 from pulumi import Output, ResourceOptions
-from pulumi_aws import ec2,rds, route53, iam, autoscaling, cloudwatch, lb, sns, dynamodb, lambda_
+from pulumi_aws import ec2,rds, route53, iam, autoscaling, cloudwatch, lb, sns, dynamodb, lambda_, acm
 from pulumi_random import RandomPassword
 
 # Load environment variables from the .env file
@@ -32,7 +32,6 @@ public_route = config("MY_PUBLIC_ROUTE")
 public_route_cidr_des = config("MY_PUBLIC_ROUTE_CIDR_DES")
 instance_type = config("Instance_Type")
 key = os.getenv("SSH_KEY")
-ami = config("AMI")
 a_record_name = config("A_RECORD_NAME")
 zone_id = config("HOSTED_ZONE_ID")
 
@@ -177,13 +176,6 @@ load_balancer_security_group = ec2.SecurityGroup(
 
 # Update App Security Group
 app_security_group_ingress = [
-    ec2.SecurityGroupIngressArgs(
-        from_port=22,
-        to_port=22,
-        protocol="tcp",
-        cidr_blocks=["0.0.0.0/0"],  # Allow SSH from any IP
-        # security_groups=[load_balancer_security_group.id],
-    ),
     ec2.SecurityGroupIngressArgs(
         from_port=8000, 
         to_port=8000,  
@@ -372,12 +364,17 @@ target_group = lb.TargetGroup(
     },
 )
 
+
+acm_certificate = acm.get_certificate(domain=a_record_name,
+    statuses=["ISSUED"])
+
 # Create Load Balancer Listener
 app_listener = lb.Listener(
     "appListener",
     load_balancer_arn=load_balancer.arn,
-    port=80,
-    protocol="HTTP",
+    port=443,
+    protocol="HTTPS",
+    certificate_arn=acm_certificate.arn,
     default_actions=[
         {
             "type": "forward",
@@ -386,10 +383,15 @@ app_listener = lb.Listener(
     ],
 )
 
+ami = ec2.get_ami(
+    executable_users=["self"],
+    most_recent=True,
+)
+
 #  Auto Scaling Application Launch Template
 launch_template = ec2.LaunchTemplate("webAppLaunchTemplate",
     name="webAppLaunchTemplate",
-    image_id=ami,  # Your custom AMI ID
+    image_id=ami.id,
     instance_type="t2.micro",
     key_name=key, 
     network_interfaces=[{
@@ -600,3 +602,5 @@ pulumi.export("loadBalancerSecurityGroup", load_balancer_security_group.name)
 pulumi.export("loadBalancer", load_balancer.dns_name)
 pulumi.export("sns_topic_arn", sns_topic.arn)
 pulumi.export("lambdaFunctionArn", lambda_function.arn)
+pulumi.export("cert",acm_certificate.arn)
+pulumi.export("ami",ami.id)
