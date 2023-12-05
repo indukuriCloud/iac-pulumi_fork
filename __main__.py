@@ -37,7 +37,7 @@ zone_id = config("HOSTED_ZONE_ID")
 
 #GCS
 gcp_bucket_name = os.getenv("GCP_BUCKET_NAME")
-gcp_bucker_location = os.getenv("GCP_BUCKER_LOCATION")
+gcp_bucket_location = os.getenv("GCP_BUCKET_LOCATION")
 project_id = os.getenv("PROJECT_ID")
 
 #lambda
@@ -146,6 +146,7 @@ public_route = ec2.Route(
 # Load Balancer Security Group
 load_balancer_security_group = ec2.SecurityGroup(
     "loadBalancerSecurityGroup",
+    name="loadBalancerSecurityGroup",
     vpc_id=vpc.id,
     ingress=[
         ec2.SecurityGroupIngressArgs(
@@ -186,6 +187,7 @@ app_security_group_ingress = [
 
 app_security_group = ec2.SecurityGroup(
     "appSecurityGroup",
+    name="appSecurityGroup",
     vpc_id=vpc.id,
     ingress=app_security_group_ingress,
     egress=[
@@ -204,6 +206,7 @@ app_security_group = ec2.SecurityGroup(
 # Create a security group for RDS instances (Database Security Group)
 db_security_group = ec2.SecurityGroup(
     "dbSecurityGroup",
+    name="dbSecurityGroup",
     vpc_id=vpc.id,
     ingress=[
         ec2.SecurityGroupIngressArgs(
@@ -264,7 +267,7 @@ rds_instance = rds.Instance(
 )
 
 # Define the SNS topic
-sns_topic = sns.Topic("my-sns-topic")
+sns_topic = sns.Topic("my-sns-topic",name="my-sns-topic")
 
 # User Data
 user_data = Output.all(
@@ -335,6 +338,7 @@ iam.RolePolicyAttachment(
 # Create an Application Load Balancer
 load_balancer = lb.LoadBalancer(
     "myLoadBalancer",
+    name="myLoadBalancer",
     internal=False,
     load_balancer_type="application",
     security_groups=[load_balancer_security_group.id],
@@ -344,6 +348,7 @@ load_balancer = lb.LoadBalancer(
 # Create a Target Group for the Load Balancer
 target_group = lb.TargetGroup(
     "appTargetGroup",
+    name="appTargetGroup",
     port=8000,  # Make sure to define application_port
     protocol="HTTP",
     target_type="instance",
@@ -429,6 +434,7 @@ auto_scaling_group = autoscaling.Group(
 # Create Scaling Policies
 scale_up_policy = autoscaling.Policy(
     "scaleUpPolicy",
+    name="scaleUpPolicy",
     policy_type = "SimpleScaling",
     scaling_adjustment=1,
     adjustment_type="ChangeInCapacity",
@@ -438,6 +444,7 @@ scale_up_policy = autoscaling.Policy(
 
 scale_down_policy = autoscaling.Policy(
     "scaleDownPolicy",
+    name="scaleDownPolicy",
     policy_type = "SimpleScaling",
     scaling_adjustment=-1,
     adjustment_type="ChangeInCapacity",
@@ -448,6 +455,7 @@ scale_down_policy = autoscaling.Policy(
 # Create CloudWatch Alarms
 cpu_utilization_high_alarm = cloudwatch.MetricAlarm(
     "cpuUtilizationHighAlarm",
+    name="cpuUtilizationHighAlarm",
     comparison_operator="GreaterThanThreshold",
     evaluation_periods=1,
     metric_name="CPUUtilization",
@@ -461,6 +469,7 @@ cpu_utilization_high_alarm = cloudwatch.MetricAlarm(
 
 cpu_utilization_low_alarm = cloudwatch.MetricAlarm(
     "cpuUtilizationLowAlarm",
+    name="cpuUtilizationLowAlarm",
     comparison_operator="LessThanThreshold",
     evaluation_periods=1,
     metric_name="CPUUtilization",
@@ -501,6 +510,7 @@ password = RandomPassword("lambdaPassword", length=16, special=True)
 
 lambda_role = iam.Role(
     "lambda_role",
+    name="lambda_role",
     assume_role_policy=json.dumps({
         "Version": "2012-10-17",
         "Statement": [
@@ -525,12 +535,13 @@ dynamodb_policy_attachment = iam.PolicyAttachment(
 # Create a DynamoDB table to track emails
 email_tracking_table = dynamodb.Table(
     "email_track",
+    name="email_track",
     attributes=[{"name": "id", "type": "N"}],
     billing_mode="PAY_PER_REQUEST",
-    hash_key="id",
+    hash_key="id"
 )
 
-gcs_bucket = storage.Bucket(gcp_bucket_name, location=gcp_bucker_location)
+gcs_bucket = storage.Bucket(gcp_bucket_name, name=gcp_bucket_name, location=gcp_bucket_location)
 
 # Create a Google Service Account
 service_account = serviceaccount.Account("serviceAccount",
@@ -559,6 +570,7 @@ access_keys = serviceaccount.Key("my-access-keys",
 # Create an AWS Lambda function
 lambda_function = lambda_.Function(
     "middleware",
+    name="middleware",
     runtime="python3.11",
     handler="lambda_function.lambda_handler",
     code=pulumi.AssetArchive({
@@ -604,3 +616,4 @@ pulumi.export("sns_topic_arn", sns_topic.arn)
 pulumi.export("lambdaFunctionArn", lambda_function.arn)
 pulumi.export("cert",acm_certificate.arn)
 pulumi.export("ami",ami.id)
+pulumi.export("bucket_url", gcs_bucket.url)

@@ -35,6 +35,11 @@ $ pulumi destroy
 https://github.com/indukuriCloud/test/raw/main/my_deployment_package.zip
 ```
 
+# Certificate Import
+```
+aws acm import-certificate --profile <profile_name> --region us-east-1 --certificate fileb://<cretificate_file_in_crt> --private-key fileb://<private_key_in_pem> --certificate-chain fileb://<ca-bundle_file>PrivateKey.pem
+```
+
 ### Environment variables:
 ```
 AWS_REGION=YOUR_NEAREST_REGION
